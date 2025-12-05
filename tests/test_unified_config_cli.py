@@ -508,12 +508,12 @@ async def test_agent_tool_execution():
             agent = SpoonReactAI(
                 name="test_agent",
                 description=agent_config.description,
-                avaliable_tools=tool_manager,
+                available_tools=tool_manager,
                 **agent_config.config
             )
             
             print(f"[OK] Agent created: {agent.name}")
-            print(f"   Available tools: {len(agent.avaliable_tools.tools)}")
+            print(f"   Available tools: {len(agent.available_tools.tools)}")
             
             # Test 4: Execute real queries  
             print("\n4. Testing real tool execution...")

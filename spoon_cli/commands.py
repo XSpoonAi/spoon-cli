@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import inspect
 import json
 import logging
 import os
@@ -7,24 +8,111 @@ import shlex
 import sys
 import traceback
 from pathlib import Path
-from typing import Callable, Dict, List, Any
+from typing import Any
+from collections.abc import Callable
 
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML as PromptHTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
+from prompt_toolkit.output import DummyOutput
 
 from spoon_ai.agents import SpoonReactAI, SpoonReactMCP
 try:
     from spoon_ai.agents.my_agents import CUSTOM_AGENTS  # Optional custom agent registry
 except Exception:
     CUSTOM_AGENTS = {}
-from spoon_ai.tools.toolkit_integration import ToolkitConfig, get_all_toolkit_tools
 from spoon_ai.retrieval.document_loader import DocumentLoader
 from spoon_ai.schema import Message, Role
 from .config.manager import ConfigManager
 from .config.errors import ConfigurationError
+
+try:
+    from spoon_ai.social_media.telegram import TelegramClient
+except Exception:
+    TelegramClient = None
+
+# Toolkit compatibility shim (core no longer exposes toolkit_integration)
+try:  # Prefer newest core helper if available
+    from spoon_ai.tools.toolkit_integration import ToolkitConfig, get_all_toolkit_tools
+except ImportError:
+    from spoon_ai.tools.base import BaseTool
+
+    def _extract_tool_name(tool_cls: type) -> str | None:
+        name = getattr(tool_cls, "name", None)
+        if not name and hasattr(tool_cls, "model_fields"):
+            try:
+                field = getattr(tool_cls, "model_fields", {}).get("name")
+                if field is not None:
+                    name = getattr(field, "default", None)
+            except Exception:
+                pass
+        return name
+
+    def _derive_tool_category(tool_cls: type) -> str:
+        module = getattr(tool_cls, "__module__", "")
+        if module.startswith("spoon_toolkits."):
+            parts = module.split(".")
+            if len(parts) > 2:
+                return parts[1]
+        return "general"
+
+    def _discover_toolkit_classes() -> dict[str, dict[str, Any]]:
+        """Inspect spoon_toolkits exports and map tool_name -> {'class', 'category'}."""
+        try:
+            import spoon_toolkits  # type: ignore
+        except Exception:
+            return {}
+
+        tools: dict[str, dict[str, Any]] = {}
+        for attr_name in dir(spoon_toolkits):
+            attr = getattr(spoon_toolkits, attr_name)
+            if inspect.isclass(attr) and attr is not BaseTool and hasattr(attr, "execute"):
+                tool_name = _extract_tool_name(attr) or attr_name
+                tools[tool_name] = {"class": attr, "category": _derive_tool_category(attr)}
+        return tools
+
+    class ToolkitConfig:  # type: ignore[override]
+        """Lightweight runtime registry for toolkit tools (fallback)."""
+        _cache: dict[str, dict[str, Any]] | None = None
+
+        @classmethod
+        def _cache_tools(cls) -> dict[str, dict[str, Any]]:
+            if cls._cache is None:
+                cls._cache = _discover_toolkit_classes()
+            return cls._cache
+
+        @classmethod
+        def get_all_categories(cls) -> list[str]:
+            cache = cls._cache_tools()
+            return sorted({info["category"] for info in cache.values()})
+
+        @classmethod
+        def get_tools_by_category(cls, category: str) -> list[str]:
+            cache = cls._cache_tools()
+            return sorted([name for name, info in cache.items() if info["category"] == category])
+
+        @classmethod
+        def get_tools_requiring_config(cls) -> list[str]:
+            # Toolkit classes don't advertise required envs consistently; return empty list for now.
+            return []
+
+        @classmethod
+        def get_tool_class(cls, name: str):
+            return cls._cache_tools().get(name, {}).get("class")
+
+    def get_all_toolkit_tools():
+        """Instantiate all discovered toolkit tools, skipping failures."""
+        tools: list[BaseTool] = []
+        cache = ToolkitConfig._cache_tools()
+        for name, info in cache.items():
+            tool_cls = info["class"]
+            try:
+                tools.append(tool_cls())
+            except Exception as exc:  # pragma: no cover - best-effort discovery
+                logging.getLogger("cli").warning(f"Skipping toolkit tool {name}: {exc}")
+        return tools
 
 
 # Create a log filter to filter out log messages containing specific keywords
@@ -88,7 +176,6 @@ logging.getLogger("spoon_ai.config").setLevel(logging.WARNING)
 logging.getLogger("spoon_ai.llm").setLevel(logging.WARNING)
 logging.getLogger("spoon_ai.utils.config_manager").setLevel(logging.WARNING)
 from spoon_ai.schema import AgentState
-from spoon_ai.social_media.telegram import TelegramClient
 
 # handler = logging.StreamHandler()
 # handler.setFormatter(ColoredFormatter())
@@ -103,8 +190,8 @@ class SpoonCommand:
     name: str
     description: str
     handler: Callable
-    aliases: List[str] = []
-    def __init__(self, name: str, description: str, handler: Callable, aliases: List[str] = []):
+    aliases: list[str] = []
+    def __init__(self, name: str, description: str, handler: Callable, aliases: list[str] = []):
         self.name = name
         self.description = description
         self.handler = handler
@@ -115,7 +202,7 @@ class SpoonAICLI:
         self.agents = {}
         self.current_agent = None
         self.config_dir = Path(__file__).resolve().parents[1]
-        self.commands: Dict[str, SpoonCommand] = {}
+        self.commands: dict[str, SpoonCommand] = {}
         self.config_manager = ConfigManager()
 
         # Get blockchain configuration from environment variables
@@ -335,7 +422,7 @@ class SpoonAICLI:
         for alias in command.aliases:
             self.commands[alias] = command
 
-    def _help(self, input_list: List[str]):
+    def _help(self, input_list: list[str]):
         if len(input_list) <= 1:
             # show all available commands
             logger.info("Available commands:")
@@ -356,7 +443,7 @@ class SpoonAICLI:
         agent_part = f"({self.current_agent.name})" if self.current_agent else "(no agent)"
         return f"Spoon AI {agent_part} > "
 
-    async def _handle_load_agent(self, input_list: List[str]):
+    async def _handle_load_agent(self, input_list: list[str]):
         if not input_list:
             logger.error("Missing agent name. Usage: load-agent <agent_name>")
             return
@@ -389,7 +476,7 @@ class SpoonAICLI:
         # Run the async load_agent method
         await self._load_agent(canonical)
 
-    def _get_available_agents(self) -> Dict[str, Dict[str, Any]]:
+    def _get_available_agents(self) -> dict[str, dict[str, Any]]:
         """Get available agents from unified configuration"""
         # Built-in agent definitions
         builtin_agents = {
@@ -460,8 +547,8 @@ class SpoonAICLI:
                 agent_instance.name = name
 
             # Add tools to agent's tool manager
-            if hasattr(agent_instance, 'avaliable_tools') and tools:
-                agent_instance.avaliable_tools.add_tools(*tools)
+            if hasattr(agent_instance, 'available_tools') and tools:
+                agent_instance.available_tools.add_tools(*tools)
                 logger.info(f"Added {len(tools)} tools to agent {name}")
 
             # Store agent and set as current
@@ -474,7 +561,7 @@ class SpoonAICLI:
             logger.error(f"Failed to load agent {name}: {e}")
             logger.debug(f"Agent loading error details: {e}", exc_info=True)
 
-    def _handle_list_agents(self, input_list: List[str]):
+    def _handle_list_agents(self, input_list: list[str]):
         """List all available agents from configuration and built-in definitions"""
         available_agents = self._get_available_agents()
 
@@ -524,11 +611,28 @@ class SpoonAICLI:
         )
         history_file = self.config_dir / "history.txt"
         history_file.touch(exist_ok=True)
-        self.session = PromptSession(
-            style=self.style,
-            completer=self.completer,
-            history=FileHistory(history_file),
-        )
+        try:
+            self.session = PromptSession(
+                style=self.style,
+                completer=self.completer,
+                history=FileHistory(history_file),
+            )
+        except Exception as exc:
+            try:
+                from prompt_toolkit.output.win32 import NoConsoleScreenBufferError  # type: ignore
+            except Exception:
+                NoConsoleScreenBufferError = Exception  # fallback sentinel
+
+            if isinstance(exc, NoConsoleScreenBufferError) or "ScreenBuffer" in exc.__class__.__name__:
+                logger.warning("Console screen buffer unavailable; using DummyOutput for prompt toolkit")
+                self.session = PromptSession(
+                    style=self.style,
+                    completer=self.completer,
+                    history=FileHistory(history_file),
+                    output=DummyOutput(),
+                )
+            else:
+                raise
 
     async def _handle_input(self, input_text: str):
         try:
@@ -546,7 +650,7 @@ class SpoonAICLI:
             logger.error(f"Error: {e}")
             logger.error(traceback.format_exc())
 
-    async def _handle_action(self, input_list: List[str]):
+    async def _handle_action(self, input_list: list[str]):
         if not self.current_agent:
             logger.error("No agent loaded")
             return
@@ -1014,11 +1118,11 @@ class SpoonAICLI:
 
 
 
-    def _exit(self, input_list: List[str]):
+    def _exit(self, input_list: list[str]):
         logger.info("Exiting Spoon AI")
         self._should_exit = True
 
-    def _handle_new_chat(self, input_list: List[str]):
+    def _handle_new_chat(self, input_list: list[str]):
         if not self.current_agent:
             logger.error("No agent loaded")
             return
@@ -1035,7 +1139,7 @@ class SpoonAICLI:
 
         logger.info(f"Started new chat with {self.current_agent.name} (chat history cleared)")
 
-    def _handle_list_chats(self, input_list: List[str]):
+    def _handle_list_chats(self, input_list: list[str]):
         chat_logs_dir = Path('chat_logs')
         if not chat_logs_dir.exists():
             logger.info("No chat histories found")
@@ -1050,7 +1154,7 @@ class SpoonAICLI:
         for chat_file in chat_files:
             agent_name = chat_file.stem.replace('_history', '')
             try:
-                with open(chat_file, 'r', encoding='utf-8') as f:
+                with open(chat_file, encoding='utf-8') as f:
                     history = json.load(f)
                     msg_count = len(history)
                     if msg_count > 0:
@@ -1070,7 +1174,7 @@ class SpoonAICLI:
             except Exception as e:
                 logger.info(f"  {agent_name}: Error reading history - {e}")
 
-    def _handle_load_chat(self, input_list: List[str]):
+    def _handle_load_chat(self, input_list: list[str]):
         if not self.current_agent:
             logger.error("No agent loaded")
             return
@@ -1087,7 +1191,7 @@ class SpoonAICLI:
             return
 
         try:
-            with open(chat_file, 'r', encoding='utf-8') as f:
+            with open(chat_file, encoding='utf-8') as f:
                 history = json.load(f)
 
             self.current_agent.save_chat_history()
@@ -1097,7 +1201,7 @@ class SpoonAICLI:
         except Exception as e:
             logger.error(f"Error loading chat history: {e}")
 
-    def _handle_config(self, input_list: List[str]):
+    def _handle_config(self, input_list: list[str]):
         """Handle configuration command"""
         if not input_list:
             self._show_config()
@@ -1166,10 +1270,16 @@ class SpoonAICLI:
         logger.info("  config default_agent my_agent")
 
 
-    def _handle_llm_status(self, input_list: List[str]):
+    def _handle_llm_status(self, input_list: list[str]):
         """Handle LLM status command to show provider configuration and availability"""
         try:
             from spoon_ai.llm.config import ConfigurationManager
+
+            # Ensure CLI configuration updates environment variables before introspection
+            try:
+                self.config_manager.load_config()
+            except Exception as load_error:
+                logger.debug(f"Failed to refresh CLI configuration before status check: {load_error}")
 
             config_manager = ConfigurationManager()
 
@@ -1231,7 +1341,7 @@ class SpoonAICLI:
             import traceback
             logger.debug(traceback.format_exc())
 
-    def _handle_reload_config(self, input_list: List[str]):
+    def _handle_reload_config(self, input_list: list[str]):
         """Reload configuration"""
         if not self.current_agent:
             logger.info("No agent loaded, please load an agent first")
@@ -1256,7 +1366,7 @@ class SpoonAICLI:
             logger.error(f"Failed to reload configuration: {e}")
             logger.debug(f"Config reload error details: {e}", exc_info=True)
 
-    def _handle_transfer(self, input_list: List[str]):
+    def _handle_transfer(self, input_list: list[str]):
         """
         Handle the transfer command
         Usage: transfer <to_address> <amount> [token_address]
@@ -1309,7 +1419,7 @@ class SpoonAICLI:
         except Exception as e:
             print(f"Transfer failed: {str(e)}")
 
-    def _handle_swap(self, input_list: List[str]):
+    def _handle_swap(self, input_list: list[str]):
         """
         Handle the swap command
         Usage: swap <token_in> <token_out> <amount> [slippage]
@@ -1373,7 +1483,7 @@ class SpoonAICLI:
         except Exception as e:
             print(f"Swap failed: {str(e)}")
 
-    def _handle_token_info_by_address(self, input_list: List[str]):
+    def _handle_token_info_by_address(self, input_list: list[str]):
         """
         Handle the token-info command
         Usage: token-info <token_address>
@@ -1408,7 +1518,7 @@ class SpoonAICLI:
         except Exception as e:
             print(f"Error getting token information: {str(e)}")
 
-    def _handle_token_info_by_symbol(self, input_list: List[str]):
+    def _handle_token_info_by_symbol(self, input_list: list[str]):
         """
         Handle the token-by-symbol command
         Usage: token-by-symbol <symbol>
@@ -1443,7 +1553,7 @@ class SpoonAICLI:
         except Exception as e:
             print(f"Error getting token information: {str(e)}")
 
-    def _handle_load_docs(self, input_list: List[str]):
+    def _handle_load_docs(self, input_list: list[str]):
         """Handle the load-docs command"""
         if not self.current_agent:
             print("No agent loaded. Please load an agent first.")
@@ -1482,7 +1592,7 @@ class SpoonAICLI:
         except Exception as e:
             print(f"Error loading documents: {e}")
 
-    def _handle_delete_docs(self, input_list: List[str]):
+    def _handle_delete_docs(self, input_list: list[str]):
         """Handle the delete-docs command"""
         if not self.current_agent and len(self.agents) == 0:
             ("No agent loaded. Please load an agent first.")
@@ -1501,12 +1611,18 @@ class SpoonAICLI:
         elif len(input_list) == 0:
             self.current_agent.delete_documents()
 
-    async def _handle_telegram_run(self, input_list: List[str]):
+    async def _handle_telegram_run(self, input_list: list[str]):
+        if TelegramClient is None:
+            logger.error("Telegram client support is not available in this build of spoon-ai")
+            return
+        if "react" not in self.agents:
+            logger.error("Please load the 'react' agent before starting Telegram client")
+            return
         telegram = TelegramClient(self.agents["react"])
         asyncio.create_task(telegram.run())
         print_formatted_text(PromptHTML("<green>Telegram client started</green>"))
 
-    def _handle_list_toolkit_categories(self, input_list: List[str]):
+    def _handle_list_toolkit_categories(self, input_list: list[str]):
         """List all available toolkit categories"""
         try:
             categories = ToolkitConfig.get_all_categories()
@@ -1521,7 +1637,7 @@ class SpoonAICLI:
         except Exception as e:
             logger.error(f"Failed to list toolkit categories: {e}")
 
-    def _handle_list_toolkit_tools(self, input_list: List[str]):
+    def _handle_list_toolkit_tools(self, input_list: list[str]):
         """List tools in a specific category"""
         try:
             if len(input_list) < 2:
@@ -1550,7 +1666,7 @@ class SpoonAICLI:
         except Exception as e:
             logger.error(f"Failed to list toolkit tools: {e}")
 
-    def _handle_load_toolkit_tools(self, input_list: List[str]):
+    def _handle_load_toolkit_tools(self, input_list: list[str]):
         """Load toolkit tools from specified categories"""
         try:
             if len(input_list) < 1:
@@ -1582,14 +1698,14 @@ class SpoonAICLI:
             selected_tools = [t for t in all_tools if getattr(t, 'name', None) in desired_tool_names]
 
             if selected_tools:
-                self.current_agent.avaliable_tools.add_tools(*selected_tools)
+                self.current_agent.available_tools.add_tools(*selected_tools)
 
             logger.info(f"✅ Successfully loaded {len(selected_tools)} toolkit tools from categories: {', '.join(categories)}")
 
         except Exception as e:
             logger.error(f"Error loading toolkit tools: {e}")
 
-    def _handle_system_info(self, input_list: List[str]):
+    def _handle_system_info(self, input_list: list[str]):
         """Display comprehensive system information and health checks"""
         import platform
         import sys
@@ -1643,7 +1759,7 @@ class SpoonAICLI:
         config_file = Path("config.json")
         if config_file.exists():
             try:
-                with open(config_file, 'r') as f:
+                with open(config_file) as f:
                     config_data = json.load(f)
                 print_formatted_text(PromptHTML("  <ansigreen>✓ config.json found</ansigreen>"))
 
@@ -1670,12 +1786,12 @@ class SpoonAICLI:
         if self.current_agent:
             print_formatted_text(PromptHTML(f"  <ansigreen>✓ Active agent: {self.current_agent.name}</ansigreen>"))
             print_formatted_text(f"  Agent type: {type(self.current_agent).__name__}")
-            if hasattr(self.current_agent, 'avaliable_tools'):
-                tool_count = len(self.current_agent.avaliable_tools.tools)
+            if hasattr(self.current_agent, 'available_tools'):
+                tool_count = len(self.current_agent.available_tools.tools)
                 if tool_count > 0:
                     print_formatted_text(PromptHTML(f"  <ansigreen>Available tools: {tool_count}</ansigreen>"))
                     # Show tool names for debugging
-                    tool_names = [tool.name for tool in self.current_agent.avaliable_tools.tools]
+                    tool_names = [tool.name for tool in self.current_agent.available_tools.tools]
                     print_formatted_text(f"    Tools: {', '.join(tool_names)}")
                 else:
                     print_formatted_text(PromptHTML("  <ansired>Available tools: 0</ansired>"))
@@ -1782,7 +1898,7 @@ class SpoonAICLI:
                 print_formatted_text("  • Load an agent with 'load-agent <name>' to start using SpoonAI")
 
         print_formatted_text(PromptHTML("<ansiwhite>═══════════════════════════════════════</ansiwhite>"))
-    def _handle_migrate_config(self, input_list: List[str]):
+    def _handle_migrate_config(self, input_list: list[str]):
         """Handle configuration migration command"""
         from .config.migrate_config import migrate_config, interactive_migration
 
@@ -1838,7 +1954,7 @@ class SpoonAICLI:
             logger.error(f"Migration error: {e}")
             print_formatted_text(PromptHTML(f"<ansired>❌ Migration failed: {e}</ansired>"))
 
-    def _handle_check_config(self, input_list: List[str]):
+    def _handle_check_config(self, input_list: list[str]):
         """Handle configuration check command"""
         print_formatted_text(PromptHTML("<ansiblue><b>🔍 Configuration Check</b></ansiblue>"))
         print_formatted_text(PromptHTML("<ansiwhite>═══════════════════════════════════════</ansiwhite>"))
@@ -1852,7 +1968,7 @@ class SpoonAICLI:
                 print_formatted_text(PromptHTML(f"<ansired>❌ Configuration file not found: {config_file}</ansired>"))
                 return
 
-            with open(config_file, 'r') as f:
+            with open(config_file) as f:
                 config_data = json.load(f)
 
             # Check if migration is needed
@@ -1900,7 +2016,7 @@ class SpoonAICLI:
         except Exception as e:
             print_formatted_text(PromptHTML(f"<ansired>❌ Error checking configuration: {e}</ansired>"))
 
-    def _handle_validate_config(self, input_list: List[str]):
+    def _handle_validate_config(self, input_list: list[str]):
         """Handle configuration validation command"""
         from .config.migrate_config import validate_environment_variables, check_mcp_server_availability
 
@@ -1939,7 +2055,7 @@ class SpoonAICLI:
             if check_env or not input_list:
                 print_formatted_text(PromptHTML("\n<ansiyellow><b>🔑 Environment Variables Check:</b></ansiyellow>"))
 
-                with open(config_file, 'r') as f:
+                with open(config_file) as f:
                     config_data = json.load(f)
 
                 missing_vars = validate_environment_variables(config_data)
@@ -1955,7 +2071,7 @@ class SpoonAICLI:
             if check_servers or not input_list:
                 print_formatted_text(PromptHTML("\n<ansiyellow><b>🖥️  MCP Server Availability Check:</b></ansiyellow>"))
 
-                with open(config_file, 'r') as f:
+                with open(config_file) as f:
                     config_data = json.load(f)
 
                 unavailable = check_mcp_server_availability(config_data)
@@ -2008,7 +2124,7 @@ class SpoonAICLI:
         print_formatted_text("  migrate-config -f my_config.json         # Migrate specific file")
         print_formatted_text("  migrate-config --dry-run                 # Preview migration")
 
-    async def _handle_tool_status(self, input_list: List[str]):
+    async def _handle_tool_status(self, input_list: list[str]):
         """Check tool loading status and diagnose issues"""
         print("🔧 Tool Status Check")
         print("=" * 50)
@@ -2022,13 +2138,13 @@ class SpoonAICLI:
         print(f"  Agent type: {type(self.current_agent).__name__}")
 
         # Check tools in agent
-        if hasattr(self.current_agent, 'avaliable_tools'):
-            tool_count = len(self.current_agent.avaliable_tools.tools)
+        if hasattr(self.current_agent, 'available_tools'):
+            tool_count = len(self.current_agent.available_tools.tools)
             print(f"✓ Tools loaded: {tool_count}")
 
             if tool_count > 0:
                 print("  Tool details:")
-                for i, tool in enumerate(self.current_agent.avaliable_tools.tools, 1):
+                for i, tool in enumerate(self.current_agent.available_tools.tools, 1):
                     print(f"    {i}. {tool.name}")
                     print(f"       Description: {tool.description}")
                     if hasattr(tool, 'mcp_transport'):
@@ -2048,7 +2164,7 @@ class SpoonAICLI:
                 try:
                     tools = await self.config_manager.load_agent_tools(self.current_agent.name)
                     if tools:
-                        self.current_agent.avaliable_tools.add_tools(*tools)
+                        self.current_agent.available_tools.add_tools(*tools)
                         print(f"✓ Successfully reloaded {len(tools)} tools")
                     else:
                         print("❌ Still no tools after reload")

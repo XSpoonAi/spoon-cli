@@ -1,5 +1,4 @@
-
-from typing import Union, Dict, Any, Optional, List
+from typing import Union, Any, Optional
 import asyncio
 import os
 import time
@@ -16,7 +15,7 @@ from ..agents.mcp_client_mixin import MCPClientMixin
 logger = logging.getLogger(__name__)
 
 class MCPTool(BaseTool, MCPClientMixin):
-    mcp_config: Dict[str, Any] = Field(default_factory=dict, description="MCP transport and tool configuration")
+    mcp_config: dict[str, Any] = Field(default_factory=dict, description="MCP transport and tool configuration")
 
     model_config = {
         "arbitrary_types_allowed": True
@@ -26,7 +25,7 @@ class MCPTool(BaseTool, MCPClientMixin):
                  name: str = "mcp_tool",
                  description: str = "MCP tool for calling external MCP servers",
                  parameters: dict = None,
-                 mcp_config: Dict[str, Any] = None):
+                 mcp_config: dict[str, Any] = None):
 
         if mcp_config is None:
             raise ValueError("`mcp_config` is required to initialize an MCPTool.")
@@ -187,7 +186,7 @@ class MCPTool(BaseTool, MCPClientMixin):
                             logger.warning(f"No tools available from MCP server for '{self.name}'")
                             return
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     retry_count += 1
                     if retry_count < self._max_retries:
                         wait_time = 2 ** retry_count
@@ -244,7 +243,7 @@ class MCPTool(BaseTool, MCPClientMixin):
                 try:
                     result = await self.call_mcp_tool(actual_tool_name, **final_args)
                     return result
-                except asyncio.TimeoutError as e:
+                except TimeoutError as e:
                     last_exception = e
                     retry_count += 1
                     if retry_count < self._max_retries:
@@ -288,7 +287,7 @@ class MCPTool(BaseTool, MCPClientMixin):
                 self._last_health_check = current_time
                 logger.debug(f"MCP health check passed for '{self.name}' - {len(tools) if tools else 0} tools available")
                 return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"MCP health check timeout for '{self.name}'")
             return False
         except Exception as e:
@@ -335,7 +334,7 @@ class MCPTool(BaseTool, MCPClientMixin):
                         raise RuntimeError(f"MCP tool '{tool_name}' returned a coroutine object instead of executing it.")
                     return result_str
                 return ""
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"MCP tool '{tool_name}' call timed out after {self._connection_timeout}s")
             raise
         except asyncio.CancelledError:

@@ -1,6 +1,6 @@
 """Pydantic models for unified tool configuration."""
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .errors import ValidationError
@@ -10,19 +10,19 @@ class MCPServerConfig(BaseModel):
     """Configuration for MCP server."""
 
     # For stdio-based servers
-    command: Optional[str] = Field(None, description="Command to start MCP server")
-    args: List[str] = Field(default_factory=list, description="Command arguments")
-    env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
-    cwd: Optional[str] = Field(None, description="Working directory")
+    command: str | None = Field(None, description="Command to start MCP server")
+    args: list[str] = Field(default_factory=list, description="Command arguments")
+    env: dict[str, str] = Field(default_factory=dict, description="Environment variables")
+    cwd: str | None = Field(None, description="Working directory")
 
     # For URL-based servers (SSE/WebSocket)
-    url: Optional[str] = Field(None, description="Remote MCP server URL (http(s) for SSE, ws(s) for WebSocket)")
-    headers: Dict[str, str] = Field(default_factory=dict, description="Optional HTTP headers for URL transports")
-    reconnect_interval: Optional[int] = Field(None, description="Reconnect interval (seconds) for SSE/WebSocket")
+    url: str | None = Field(None, description="Remote MCP server URL (http(s) for SSE, ws(s) for WebSocket)")
+    headers: dict[str, str] = Field(default_factory=dict, description="Optional HTTP headers for URL transports")
+    reconnect_interval: int | None = Field(None, description="Reconnect interval (seconds) for SSE/WebSocket")
 
     # Common options
     disabled: bool = Field(False, description="Server disabled flag")
-    autoApprove: List[str] = Field(default_factory=list, description="Auto-approved tool names")
+    autoApprove: list[str] = Field(default_factory=list, description="Auto-approved tool names")
     transport: Literal["auto", "npx", "python", "uvx", "sse", "websocket"] = Field(
         "auto", description="Transport method"
     )
@@ -65,11 +65,11 @@ class ToolConfig(BaseModel):
 
     name: str = Field(..., description="Unique tool identifier")
     type: Literal["mcp", "builtin", "external"] = Field(..., description="Tool type")
-    description: Optional[str] = Field(None, description="Tool description")
+    description: str | None = Field(None, description="Tool description")
     enabled: bool = Field(True, description="Whether tool is enabled")
-    mcp_server: Optional[MCPServerConfig] = Field(None, description="MCP server configuration")
-    config: Dict[str, Any] = Field(default_factory=dict, description="Tool-specific settings")
-    env: Dict[str, str] = Field(default_factory=dict, description="Environment variables for this tool")
+    mcp_server: MCPServerConfig | None = Field(None, description="MCP server configuration")
+    config: dict[str, Any] = Field(default_factory=dict, description="Tool-specific settings")
+    env: dict[str, str] = Field(default_factory=dict, description="Environment variables for this tool")
 
     @model_validator(mode='after')
     def validate_mcp_config(self):
@@ -94,13 +94,13 @@ class AgentConfig(BaseModel):
     """Configuration for an agent."""
 
     class_name: str = Field(..., alias="class", description="Agent class name")
-    aliases: List[str] = Field(default_factory=list, description="Agent aliases")
-    description: Optional[str] = Field(None, description="Agent description")
-    config: Dict[str, Any] = Field(default_factory=dict, description="Agent-specific configuration")
-    tools: List[ToolConfig] = Field(default_factory=list, description="Tool configurations")
+    aliases: list[str] = Field(default_factory=list, description="Agent aliases")
+    description: str | None = Field(None, description="Agent description")
+    config: dict[str, Any] = Field(default_factory=dict, description="Agent-specific configuration")
+    tools: list[ToolConfig] = Field(default_factory=list, description="Tool configurations")
 
     # Legacy fields for backward compatibility
-    mcp_servers: Optional[List[str]] = Field(None, description="Legacy MCP servers list")
+    mcp_servers: list[str] | None = Field(None, description="Legacy MCP servers list")
 
     @field_validator('class_name')
     @classmethod
@@ -125,16 +125,16 @@ class AgentConfig(BaseModel):
 class SpoonConfig(BaseModel):
     """Complete SpoonAI configuration."""
 
-    api_keys: Dict[str, str] = Field(default_factory=dict)
-    providers: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    llm_settings: Dict[str, Any] = Field(default_factory=dict)
-    default_agent: Optional[str] = None
-    agents: Dict[str, AgentConfig] = Field(default_factory=dict)
+    api_keys: dict[str, str] = Field(default_factory=dict)
+    providers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    llm_settings: dict[str, Any] = Field(default_factory=dict)
+    default_agent: str | None = None
+    agents: dict[str, AgentConfig] = Field(default_factory=dict)
 
     # Other configuration fields
-    RPC_URL: Optional[str] = None
-    SCAN_URL: Optional[str] = None
-    CHAIN_ID: Optional[str] = None
+    RPC_URL: str | None = None
+    SCAN_URL: str | None = None
+    CHAIN_ID: str | None = None
 
     @field_validator('agents')
     @classmethod

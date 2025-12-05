@@ -1,6 +1,6 @@
 from fastmcp import FastMCP
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 # Import base tool classes and tool manager
 from spoon_ai.tools import BaseTool, ToolManager

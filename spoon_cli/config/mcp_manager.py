@@ -5,7 +5,7 @@ import hashlib
 import logging
 import os
 import subprocess
-from typing import Dict, Optional, Set, Any
+from typing import Optional, Any
 from dataclasses import dataclass
 
 from fastmcp import Client as MCPClient
@@ -13,13 +13,20 @@ from fastmcp import Client as MCPClient
 # Reuse core MCP modules to avoid duplication
 try:
     from spoon_ai.tools.mcp_tool import MCPTool
-    from spoon_ai.agents.mcp_client_mixin import MCPClientMixin
-    from spoon_ai.tools.mcp_tools_collection import MCPToolsCollection
 except ImportError as _e:
-    # Keep manager functional even if core MCP modules are unavailable at import time
-    logging.getLogger(__name__).warning(f"Core MCP modules not available: {_e}")
+    logging.getLogger(__name__).warning(f"Core MCP tool not available: {_e}")
     MCPTool = None
+
+try:
+    from spoon_ai.agents.mcp_client_mixin import MCPClientMixin
+except ImportError as _e:
+    logging.getLogger(__name__).warning(f"Core MCP client mixin not available: {_e}")
     MCPClientMixin = None
+
+try:
+    from spoon_ai.tools.mcp_tools_collection import MCPToolsCollection
+except ImportError:
+    # Optional helper module; CLI can operate without it
     MCPToolsCollection = None
 
 from .models import MCPServerConfig
@@ -34,20 +41,20 @@ class MCPServerInstance:
 
     server_id: str
     config: MCPServerConfig
-    process: Optional[subprocess.Popen] = None
-    mcp_tool: Optional[Any] = None  # Reuse MCPTool from core
+    process: subprocess.Popen | None = None
+    mcp_tool: Any | None = None  # Reuse MCPTool from core
     reference_count: int = 0
     status: str = "stopped"  # stopped, starting, running, error
-    error_message: Optional[str] = None
-    available_tools: Optional[list] = None  # Cache of available tools
+    error_message: str | None = None
+    available_tools: list | None = None  # Cache of available tools
 
 
 class MCPServerManager:
     """Manages MCP server lifecycle and reuse."""
 
     def __init__(self):
-        self.active_servers: Dict[str, MCPServerInstance] = {}
-        self.server_configs: Dict[str, MCPServerConfig] = {}
+        self.active_servers: dict[str, MCPServerInstance] = {}
+        self.server_configs: dict[str, MCPServerConfig] = {}
         self._lock = asyncio.Lock()
 
     def _generate_server_id(self, config: MCPServerConfig) -> str:
@@ -128,7 +135,7 @@ class MCPServerManager:
             await self._stop_server_internal(server_id, keep_instance=True)
             await self._start_server_internal(server)
 
-    def get_server_for_tool(self, tool_name: str) -> Optional[MCPServerInstance]:
+    def get_server_for_tool(self, tool_name: str) -> MCPServerInstance | None:
         """Get the MCP server instance for a specific tool."""
         # This would need to be implemented based on tool-to-server mapping
         # For now, return the first running server that has the tool in autoApprove
@@ -139,7 +146,7 @@ class MCPServerManager:
                 return server
         return None
 
-    def get_server_status(self, server_id: str) -> Dict[str, any]:
+    def get_server_status(self, server_id: str) -> dict[str, any]:
         """Get status information for a server."""
         if server_id not in self.active_servers:
             return {"status": "not_found"}
@@ -152,7 +159,7 @@ class MCPServerManager:
             "config": server.config.model_dump()
         }
 
-    def list_servers(self) -> Dict[str, Dict[str, any]]:
+    def list_servers(self) -> dict[str, dict[str, any]]:
         """List all servers and their status."""
         return {
             server_id: self.get_server_status(server_id)

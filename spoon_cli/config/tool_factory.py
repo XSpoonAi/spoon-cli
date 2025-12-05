@@ -3,7 +3,8 @@
 import logging
 import os
 import asyncio
-from typing import Dict, Any, Optional
+import inspect
+from typing import Any, Optional
 
 from fastmcp import Client as MCPClient
 
@@ -20,8 +21,8 @@ class ToolFactory:
 
     def __init__(self, mcp_manager: MCPServerManager):
         self.mcp_manager = mcp_manager
-        self._builtin_tools: Dict[str, type] = {}
-        self._external_tools: Dict[str, type] = {}
+        self._builtin_tools: dict[str, type] = {}
+        self._external_tools: dict[str, type] = {}
 
     def register_builtin_tool(self, name: str, tool_class: type) -> None:
         """Register a built-in tool class."""
@@ -67,7 +68,7 @@ class ToolFactory:
             tool_class = self._import_builtin_tool(tool_config.name)
 
         # Fallback to aggregator to get an instance if class not found
-        aggregator_instance: Optional[BaseTool] = None
+        aggregator_instance: BaseTool | None = None
         if not tool_class:
             aggregator_instance = self._create_builtin_tool_via_aggregator(tool_config)
             if aggregator_instance is None:
@@ -106,7 +107,7 @@ class ToolFactory:
                 f"Failed to initialize built-in tool: {str(e)}"
             )
 
-    def _create_builtin_tool_via_aggregator(self, tool_config: ToolConfig) -> Optional[BaseTool]:
+    def _create_builtin_tool_via_aggregator(self, tool_config: ToolConfig) -> BaseTool | None:
         """Try to obtain a builtin tool instance using core aggregator without hardcoding names."""
         try:
             import importlib
@@ -195,9 +196,20 @@ class ToolFactory:
                 f"Failed to initialize external tool: {str(e)}"
             )
 
-    def _import_builtin_tool(self, tool_name: str) -> Optional[type]:
+    def _import_builtin_tool(self, tool_name: str) -> type | None:
         """Dynamically import a built-in tool class."""
         try:
+            def _declared_name(cls) -> str | None:
+                name = getattr(cls, "name", None)
+                if not name and hasattr(cls, "model_fields"):
+                    try:
+                        field = getattr(cls, "model_fields", {}).get("name")
+                        if field is not None:
+                            name = getattr(field, "default", None)
+                    except Exception:
+                        pass
+                return name
+
             # Try common tool locations
             import_paths = [
                 f"spoon_ai.tools.{tool_name}",
@@ -230,8 +242,31 @@ class ToolFactory:
                                     self._builtin_tools[tool_name] = tool_class
                                     return tool_class
 
+                    # Fallback: inspect module for any tool-like class declaring matching name
+                    for _attr, obj in inspect.getmembers(module, inspect.isclass):
+                        try:
+                            if self._is_tool_like_class(obj) and _declared_name(obj) == tool_name:
+                                self._builtin_tools[tool_name] = obj
+                                return obj
+                        except Exception:
+                            continue
+
                 except ImportError:
                     continue
+
+            # Global fallback: scan spoon_toolkits namespace for matching tool name
+            try:
+                import spoon_toolkits  # type: ignore
+
+                for _attr, obj in inspect.getmembers(spoon_toolkits, inspect.isclass):
+                    try:
+                        if self._is_tool_like_class(obj) and _declared_name(obj) == tool_name:
+                            self._builtin_tools[tool_name] = obj
+                            return obj
+                    except Exception:
+                        continue
+            except Exception:
+                pass
 
             logger.warning(f"Could not import built-in tool: {tool_name}")
             return None
@@ -259,11 +294,14 @@ class ToolFactory:
             # Prefer coroutine functions, but accept any callable
             # to avoid import-time inspection complexities
             has_metadata = any(hasattr(cls, attr) for attr in ('name', 'description', 'parameters'))
+            if not has_metadata and hasattr(cls, "model_fields"):
+                fields = getattr(cls, "model_fields", {})
+                has_metadata = any(key in fields for key in ("name", "description", "parameters"))
             return callable(execute_fn) and has_metadata
         except Exception:
             return False
 
-    def _apply_environment_variables(self, env_vars: Dict[str, str]) -> None:
+    def _apply_environment_variables(self, env_vars: dict[str, str]) -> None:
         """Apply environment variables for tool configuration."""
         if not env_vars:
             return
@@ -282,7 +320,7 @@ class MCPToolWrapper(BaseTool):
         name: str,
         description: str,
         server_instance: MCPServerInstance,
-        config: Dict[str, Any] = None
+        config: dict[str, Any] = None
     ):
         super().__init__(
             name=name,
@@ -297,6 +335,7 @@ class MCPToolWrapper(BaseTool):
         object.__setattr__(self, 'server_instance', server_instance)
         object.__setattr__(self, 'config', config or {})
         object.__setattr__(self, '_tool_schema', None)
+        object.__setattr__(self, 'mcp_config', config or {})
         # Mark this as an MCP tool by adding mcp_transport attribute
         object.__setattr__(self, 'mcp_transport', server_instance)
 

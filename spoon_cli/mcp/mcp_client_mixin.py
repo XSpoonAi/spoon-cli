@@ -1,5 +1,7 @@
 import time
-from typing import Union, Dict, Any, Optional, List, AsyncIterator, AsyncContextManager
+from typing import Union, Any, Optional, AsyncContextManager
+
+from collections.abc import AsyncIterator
 import asyncio
 from contextlib import asynccontextmanager
 from fastmcp.client import Client as MCPClient
@@ -116,7 +118,7 @@ class MCPClientMixin:
                 # Always attempt cleanup on context exit
                 await self._cleanup_session(task_id, session_info, session)
 
-    async def _cleanup_session(self, task_id: int, session_info: Optional[Dict], session: Optional[Any]):
+    async def _cleanup_session(self, task_id: int, session_info: dict | None, session: Any | None):
         """Clean up a specific session with proper error handling."""
         try:
             if session_info and not session_info.get("closed", False):
@@ -237,8 +239,8 @@ class MCPClientMixin:
             logger.error(f"MCP tool '{tool_name}' call failed: {e}")
             return f"MCP tool '{tool_name}' execution failed: {str(e)}"
 
-    async def send_mcp_message(self, recipient: str, message: Union[str, Dict[str, Any]],
-                              topic: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    async def send_mcp_message(self, recipient: str, message: str | dict[str, Any],
+                              topic: str | None = None, metadata: dict[str, Any] | None = None) -> bool:
         """
         Send a message to the MCP system
 
@@ -296,7 +298,7 @@ class MCPClientMixin:
         logger.info("MCP client cleanup completed")
         logger.info(f"Session stats: {self._session_stats}")
 
-    def get_session_stats(self) -> Dict[str, Any]:
+    def get_session_stats(self) -> dict[str, Any]:
         """Get session statistics for monitoring."""
         return {
             **self._session_stats,

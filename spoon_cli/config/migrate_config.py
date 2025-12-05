@@ -3,8 +3,7 @@ Simple configuration migration utilities for CLI.
 """
 
 import logging
-from typing import Dict, Any, List
-
+from typing import Any
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +25,7 @@ def interactive_migration() -> bool:
     return True
 
 
-def validate_environment_variables(config_data: Dict[str, Any]) -> List[str]:
+def validate_environment_variables(config_data: dict[str, Any]) -> list[str]:
     """Validate environment variables in configuration."""
     missing_vars = []
     if "api_keys" in config_data:
@@ -36,7 +35,7 @@ def validate_environment_variables(config_data: Dict[str, Any]) -> List[str]:
     return missing_vars
 
 
-def check_mcp_server_availability(config_data: Dict[str, Any]) -> List[str]:
+def check_mcp_server_availability(config_data: dict[str, Any]) -> list[str]:
     """Check MCP server availability."""
     unavailable = []
     if "agents" in config_data:

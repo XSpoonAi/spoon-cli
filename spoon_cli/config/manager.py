@@ -4,8 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Optional
 from .models import (
     SpoonConfig, AgentConfig, ToolConfig, MCPServerConfig
 )
@@ -22,9 +21,56 @@ class ConfigManager:
 
     def __init__(self, config_path: str = "config.json"):
         self.config_path = config_path
-        self.config: Optional[SpoonConfig] = None
+        self.config: SpoonConfig | None = None
         self.mcp_manager = MCPServerManager()
         self.tool_factory = ToolFactory(self.mcp_manager)
+
+    def _apply_llm_environment(self) -> None:
+        """Export LLM-related configuration into environment variables."""
+        if not self.config:
+            return
+
+        # Apply API keys
+        api_keys = getattr(self.config, "api_keys", {}) or {}
+        for provider, key in api_keys.items():
+            if isinstance(key, str) and key.strip():
+                os.environ[f"{provider.upper()}_API_KEY"] = key.strip()
+
+        # Apply provider-specific settings
+        providers = getattr(self.config, "providers", {}) or {}
+        for provider, settings in providers.items():
+            if not isinstance(settings, dict):
+                continue
+            prefix = provider.upper()
+            mapping = {
+                "api_key": f"{prefix}_API_KEY",
+                "base_url": f"{prefix}_BASE_URL",
+                "model": f"{prefix}_MODEL",
+                "max_tokens": f"{prefix}_MAX_TOKENS",
+                "temperature": f"{prefix}_TEMPERATURE",
+                "timeout": f"{prefix}_TIMEOUT",
+            }
+            for key, env_key in mapping.items():
+                value = settings.get(key)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                os.environ[env_key] = str(value)
+
+        # Apply global LLM settings
+        llm_settings = getattr(self.config, "llm_settings", {}) or {}
+        default_provider = llm_settings.get("default_provider")
+        if isinstance(default_provider, str) and default_provider.strip():
+            os.environ["DEFAULT_LLM_PROVIDER"] = default_provider.strip()
+
+        fallback_chain = llm_settings.get("fallback_chain")
+        if isinstance(fallback_chain, list) and fallback_chain:
+            os.environ["LLM_FALLBACK_CHAIN"] = ",".join(
+                str(provider).strip()
+                for provider in fallback_chain
+                if str(provider).strip()
+            )
+        elif isinstance(fallback_chain, str) and fallback_chain.strip():
+            os.environ["LLM_FALLBACK_CHAIN"] = fallback_chain.strip()
 
 
     def load_config(self) -> SpoonConfig:
@@ -33,13 +79,15 @@ class ConfigManager:
             if not os.path.exists(self.config_path):
                 logger.warning(f"Config file not found: {self.config_path}, using defaults")
                 self.config = SpoonConfig()
+                self._apply_llm_environment()
                 return self.config
 
-            with open(self.config_path, 'r', encoding='utf-8') as f:
+            with open(self.config_path, encoding='utf-8') as f:
                 config_data = json.load(f)
 
             # Validate and create configuration
             self.config = SpoonConfig(**config_data)
+            self._apply_llm_environment()
 
             logger.info(f"Loaded configuration from {self.config_path}")
             return self.config
@@ -66,11 +114,12 @@ class ConfigManager:
                 json.dump(config_data, f, indent=2, ensure_ascii=False)
 
             logger.info(f"Saved configuration to {self.config_path}")
+            self._apply_llm_environment()
 
         except Exception as e:
             raise ConfigurationError(f"Failed to save configuration: {str(e)}")
 
-    async def load_agent_tools(self, agent_name: str) -> List[BaseTool]:
+    async def load_agent_tools(self, agent_name: str) -> list[BaseTool]:
         """Load and create tool instances for an agent."""
         if not self.config:
             raise ConfigurationError("Configuration not loaded")
@@ -153,7 +202,7 @@ class ConfigManager:
 
         raise ConfigurationError(f"Agent not found: {agent_name}")
 
-    def list_agents(self) -> Dict[str, Dict[str, Any]]:
+    def list_agents(self) -> dict[str, dict[str, Any]]:
         """List all available agents with their metadata."""
         if not self.config:
             raise ConfigurationError("Configuration not loaded")
@@ -170,7 +219,7 @@ class ConfigManager:
 
         return agents
 
-    def validate_configuration(self) -> List[str]:
+    def validate_configuration(self) -> list[str]:
         """Validate the current configuration and return any issues."""
         if not self.config:
             return ["Configuration not loaded"]
@@ -246,7 +295,7 @@ class ConfigManager:
         return default
 
     # --- Backward-compat helpers used by CLI ---
-    def list_config(self) -> Dict[str, Any]:
+    def list_config(self) -> dict[str, Any]:
         """Return the current configuration as a plain dictionary.
 
         Secrets are NOT masked here; masking is handled by the CLI caller.
@@ -300,7 +349,7 @@ class ConfigManager:
 
         # Nested updates for providers and llm_settings
         if parts[0] in {"providers", "llm_settings"}:
-            target: Dict[str, Any]
+            target: dict[str, Any]
             if parts[0] == "providers":
                 if self.config.providers is None:
                     self.config.providers = {}
@@ -311,7 +360,7 @@ class ConfigManager:
                 target = self.config.llm_settings
 
             # Ensure path exists
-            current: Dict[str, Any] = target
+            current: dict[str, Any] = target
             for sub_key in parts[1:-1]:
                 if sub_key not in current or not isinstance(current[sub_key], dict):
                     current[sub_key] = {}
@@ -337,7 +386,7 @@ class ConfigManager:
         self.save_config(self.config)
 
     @staticmethod
-    def _is_placeholder_value(value: Optional[str]) -> bool:
+    def _is_placeholder_value(value: str | None) -> bool:
         """Heuristically determine if a value looks like a placeholder."""
         if not value or not isinstance(value, str):
             return False
@@ -351,7 +400,7 @@ class ConfigManager:
         )
 
     @staticmethod
-    def _detect_legacy_config(config_data: Dict[str, Any]) -> bool:
+    def _detect_legacy_config(config_data: dict[str, Any]) -> bool:
         """Detect whether a given config dict uses legacy structure.
 
         Very lightweight detection used by the CLI 'check-config' helper.
@@ -371,4 +420,3 @@ class ConfigManager:
                 if not isinstance(val, dict):
                     return True
         return False
-

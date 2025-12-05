@@ -49,14 +49,14 @@ class ToolResult(BaseModel):
     """Result of a tool execution."""
 
     output: Any = Field(default=None)
-    error: Optional[str] = Field(default=None)
-    system: Optional[str] = Field(default=None)
+    error: str | None = Field(default=None)
+    system: str | None = Field(default=None)
 
     def __bool__(self):
         return any(getattr(self, attr) for attr in self.model_fields)
 
     def __add__(self, other: "ToolResult") -> "ToolResult":
-        def combine_fields(field: Optional[str], other_field: Optional[str], concatenate: bool = False):
+        def combine_fields(field: str | None, other_field: str | None, concatenate: bool = False):
             if field and other_field:
                 if concatenate:
                     return field + other_field
