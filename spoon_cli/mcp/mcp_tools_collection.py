@@ -1,4 +1,5 @@
 from fastmcp import FastMCP
+from fastmcp.tools.tool import FunctionTool
 import asyncio
 from typing import Any, Optional
 
@@ -58,9 +59,15 @@ class MCPToolsCollection:
         # Create tool manager
         self.tool_manager = ToolManager(tools)
 
-        # Create MCP wrapper for each tool
+        # Create MCP wrapper for each tool using FunctionTool
         for tool in tools:
-            self.mcp.add_tool(tool.execute, name=tool.name, description=tool.description)
+            mcp_tool = FunctionTool(
+                name=tool.name,
+                description=tool.description,
+                fn=tool.execute,
+                parameters=getattr(tool, "parameters", {}) or {},
+            )
+            self.mcp.add_tool(mcp_tool)
 
     async def run(self, **kwargs):
         """Start the MCP server
@@ -72,7 +79,13 @@ class MCPToolsCollection:
 
     async def add_tool(self, tool: BaseTool):
         """Add a tool to the MCP server"""
-        self.mcp.add_tool(tool.execute, name=tool.name, description=tool.description)
+        mcp_tool = FunctionTool(
+            name=tool.name,
+            description=tool.description,
+            fn=tool.execute,
+            parameters=getattr(tool, "parameters", {}) or {},
+        )
+        self.mcp.add_tool(mcp_tool)
 
 # Create default instance that can be imported directly
 mcp_tools = MCPToolsCollection()
